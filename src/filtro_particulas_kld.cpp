@@ -26,15 +26,15 @@ Filtro_Particulas_Kld::Filtro_Particulas_Kld(ros::NodeHandle n)
 	//laser_noise_ = qtdd_laser_;
 
 	//noise_level = (desvio_padrao / max_range) * 100% || max_range * erro_desejado
-	laser_data_noise_ = 0.28; //(0.28 / 5.6) ~ 5%
-	move_noise_ = 0.02; //(0.016 / 0.2) ~ 8%
-	turn_noise_ = 0.015; //(0.012 / 0.15) ~ 8%
+	laser_data_noise_ = 0.14; //(0.28 / 5.6) ~ 5%
+	move_noise_ = 0.01; //(0.016 / 0.2) ~ 8%
+	turn_noise_ = 0.0075; //(0.012 / 0.15) ~ 8%
 
 	error_particles_ = 0.14; //0.45 ~ dist de 0.3m da particula (na media) ; 0.28 ~ 0.2m; 0.14 ~ 0.1m
 
-	bins_ = 7 - (res_/0.05); //método empírico kkkk
-	kld_err_ = 0.01;
+	kld_err_ = 0.015;
 	kld_z_ = 3; //upper 1 − δ quantile of the standard normal distribution -> usar tabela de quantil
+
 
 
 //--------------------------------------------------------------------------------//
@@ -717,10 +717,13 @@ void Filtro_Particulas_Kld::calculoSampleSize(int k)
 {
 	double a, b, c, x;
 	int n;
+	int num_part_ant = num_part_;
 
 	if (k <= 1)
 	{
-		num_part_ = max_part_;
+		//cout<<endl;
+		//ROS_INFO("k: %d !!! Não devia...", k);
+		//num_part_ = max_part_;
 	}
 
 	else
@@ -745,8 +748,17 @@ void Filtro_Particulas_Kld::calculoSampleSize(int k)
 			num_part_ = n;
 		}
 
-		printf("\nnum_part_: %d | k: %d | n: %d ", num_part_, k, n);
+		printf("\nnum_part_: %d | k: %d | n: %d | bins: %d ", num_part_, k, n, bins_);
+	}
 
+	if(num_part_ > num_part_ant)
+	{
+		for(int i = num_part_ant ; i < num_part_ ; i++)
+		{
+			particle_pose_[i].x = particle_pose_[0].x + gaussian(0.0, (3*move_noise_));
+			particle_pose_[i].y = particle_pose_[0].y + gaussian(0.0, (3*move_noise_));
+			particle_pose_[i].theta = particle_pose_[0].theta + gaussian(0.0, (3*turn_noise_));
+		}
 	}
 
 }
@@ -849,10 +861,17 @@ void Filtro_Particulas_Kld::spin()
 		ros::spinOnce();
 		loopRate.sleep();
 		//cout<<free_ok_<<occ_ok_<<odom_ok_<<laser_ok_<<endl;
-		if (free_ok_ == true && occ_ok_ == true){
-			num_part_ = max_part_;
+		if (free_ok_ == true && occ_ok_ == true)
+		{
+			if(create_particle_ok_ == 1)
+			{
+				bins_ = 8 - (res_/0.05); //12 - (2 * (res_/0.05)); //método empírico kkkk
+				num_part_ = max_part_;
+			}
 			createParticles();
-			if(create_particle_ok_ == 0  && odom_ok_ == true && laser_ok_ == true && zerar_deltas_ == false){
+
+			if(create_particle_ok_ == 0 && zerar_deltas_ == false)
+			{
 				pose_anterior_.x = pose_x_;
 				pose_anterior_.y = pose_y_;
 				pose_anterior_.theta = pose_theta_;
@@ -861,9 +880,9 @@ void Filtro_Particulas_Kld::spin()
 
 				moveParticles();
 				//cout<<"moveParticles()"<<endl;
-			}else if(create_particle_ok_ == 0  && odom_ok_ == true && laser_ok_ == true && zerar_deltas_ == true){
+			}else if(create_particle_ok_ == 0 && zerar_deltas_ == true)
+			{
 				moveParticles();
-
 			}
 		}
 	}
