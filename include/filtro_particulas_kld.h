@@ -64,6 +64,15 @@ class Filtro_Particulas_Kld
 		void pubInicialPose();
 		void cloud();
 
+		//métodos para variar o sample size
+		void calculoNumKBins();
+		bool buscaPosexyBins();
+		bool ordenaVetorPosexyBins();
+		void merge_sort (int vector[], const int low, const int high);
+		void merge (int vector[], const int low, const int mid, const int high);
+		void calculoSampleSize(int k);
+
+
 		void spin();
 
 	private:
@@ -100,6 +109,15 @@ class Filtro_Particulas_Kld
 		int range_max_fakelaser; //[m]
 		double error_particles_;
 
+		int max_part_;
+		int min_part_;
+		double kld_err_;
+		double kld_z_;
+		int bins_;
+		int k_bins_;
+		int vetor_pose_xy_bins_[10000];
+		int pose_xy_bins_;
+
 		double reduz_gauss_;
 		double arctan_;
 		double hipot_;
@@ -122,6 +140,7 @@ class Filtro_Particulas_Kld
 		int cont;
 		double total;
 		double probt;
+		double probtg;
 		double passo;
 		double sum;
 		int index_max_w_;

@@ -16,7 +16,9 @@ Filtro_Particulas_Kld::Filtro_Particulas_Kld(ros::NodeHandle n)
 //--------------------------------------------------------------------------------//
 	freq_ = 20.0;
 
-	num_part_ = 350;
+	//num_part_ = 350;
+	max_part_ = 5000;
+	min_part_ = 100;
 	qtdd_laser_ = 20;
 
 	//passo_base = 0.05;//0.025;
@@ -29,6 +31,11 @@ Filtro_Particulas_Kld::Filtro_Particulas_Kld(ros::NodeHandle n)
 	turn_noise_ = 0.015; //(0.012 / 0.15) ~ 8%
 
 	error_particles_ = 0.14; //0.45 ~ dist de 0.3m da particula (na media) ; 0.28 ~ 0.2m; 0.14 ~ 0.1m
+
+	bins_ = 7 - (res_/0.05); //método empírico kkkk
+	kld_err_ = 0.01;
+	kld_z_ = 3; //upper 1 − δ quantile of the standard normal distribution -> usar tabela de quantil
+
 
 //--------------------------------------------------------------------------------//
 
@@ -273,6 +280,19 @@ void Filtro_Particulas_Kld::createParticles()
 	create_particle_ok_ = 0;
 }
 
+double Filtro_Particulas_Kld::gaussian(double mu, double sigma, double x)
+{
+	gaussian_ = (exp(- (pow((mu - x), 2) / pow(sigma, 2) / 2.0))) / sqrt(2.0 * M_PI * pow(sigma, 2));
+
+	//cout<<"Gaussian (mu,sigma,x): mu: "<<mu<<" ; laser_Data: "<<x<<" ; gaussian3: "<<gaussian_<<endl;
+	//usleep(25000);
+	//cout<<mu<<endl;
+
+	return gaussian_;
+
+}
+
+
 double Filtro_Particulas_Kld::gaussian(double mu, double sigma)
 {
 	unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
@@ -297,7 +317,7 @@ void Filtro_Particulas_Kld::fakeLaser()
 
 	for (int i = 0; i < num_part_; i++)
 	{
-		//probt = 1.0;
+		probtg = 1.0;
 		probt = 0.0;
 
 		double it = M_PI / (qtdd_laser_);
@@ -369,6 +389,10 @@ void Filtro_Particulas_Kld::fakeLaser()
 		total += weight_part_[i];
 		//cout<<"weight_part_"<<i<<" | probt: "<<probt<<endl;
 		//usleep(25000);
+
+		//cout<<"probt"<<probt<<" | probtg: "<<probtg<<endl;
+		//usleep(25000);
+
 	}
 	//cout<<"ACHOU OBST: "<<achou<<endl;
 	//cout<<"Fake_laser()"<<endl;
@@ -406,7 +430,8 @@ double Filtro_Particulas_Kld::measurementProb(int particleMP, int laserMP)
 {
 	probt +=  fabs(weight_part_laser_[particleMP][laserMP] - (laser_data_[laserMP] + gaussian(0,laser_data_noise_)));
 
-	//probt *= gaussian(laser_data_[laserMP], laser_noise_, weight_part_laser_[particleMP][laserMP]);
+	probtg *= gaussian(laser_data_[laserMP], laser_noise_, weight_part_laser_[particleMP][laserMP]);
+
 	//usleep(250000);
 	//cout<<"laser_virtual_["<<particleMP<<"]["<<laserMP<<"]: "<<weight_part_laser_[particleMP][laserMP]<<" | "<<laser_noise_<<" | "<<laser_data_[laserMP]<<" | prob: "<<probt<<endl;
 	//cout<<"Particula: "<<p<<" | Num_laser: "<<l<<" ; Data: "<<laser_data_[l]<<" | Peso: "<<weight_part_laser_[p][l]<<endl;
@@ -548,6 +573,9 @@ void Filtro_Particulas_Kld::moveParticles()
 		//cout<<"resample()"<<endl;
 		pubInicialPose();
 		//cout<<"pubinitialPose()"<<endl;
+
+		calculoNumKBins();
+		calculoSampleSize(k_bins_);
 	}
 }
 
@@ -645,6 +673,174 @@ void Filtro_Particulas_Kld::cloud()
 	particle_cloud_pub_.publish(cloud_msg);
 }
 
+void Filtro_Particulas_Kld::calculoNumKBins()
+{
+	//zerar o vetor
+	for(int j = 0 ; j < 10000 ; j++)
+	{
+		vetor_pose_xy_bins_[j] = 0;
+	}
+
+	k_bins_ = 0;
+
+	int pose_x_pixel = 0;
+	int pose_y_pixel = 0;
+
+	int celula_pose_x = 0;
+	int celula_pose_y = 0;
+
+
+	for(int i = 0 ; i < num_part_ ; i++)
+	{
+		//pose em metros para pixels
+		pose_x_pixel = particle_pose_[i].x / res_;
+		pose_y_pixel = particle_pose_[i].y / res_;
+
+		//relacionar os poses com os bins
+		celula_pose_x = pose_x_pixel / bins_;
+		celula_pose_y = pose_y_pixel / bins_;
+
+		pose_xy_bins_ = (10000 * celula_pose_x) + celula_pose_y;
+
+		buscaPosexyBins();
+
+		if(buscaPosexyBins() == false)
+		{
+			vetor_pose_xy_bins_[0] = pose_xy_bins_;
+			k_bins_++;
+			ordenaVetorPosexyBins();
+		}
+	}
+}
+
+void Filtro_Particulas_Kld::calculoSampleSize(int k)
+{
+	double a, b, c, x;
+	int n;
+
+	if (k <= 1)
+	{
+		num_part_ = max_part_;
+	}
+
+	else
+	{
+		a = 1;
+		b = 2 / (9 * ((double) k - 1));
+		c = sqrt(2 / (9 * ((double) k - 1))) * kld_z_;
+		x = a - b + c;
+
+		n = (int) ceil((k - 1) / (2 * kld_err_) * x * x * x);
+
+		if (n < min_part_)
+		{
+			num_part_ = min_part_;
+		}
+		else if (n > max_part_)
+		{
+			num_part_ = max_part_;
+		}
+		else
+		{
+			num_part_ = n;
+		}
+
+		printf("\nnum_part_: %d | k: %d | n: %d ", num_part_, k, n);
+
+	}
+
+}
+
+bool Filtro_Particulas_Kld::buscaPosexyBins()
+{
+	int esq, meio, dir;
+	esq = 0;
+	dir = 10000 - 1;
+
+	while (esq <= dir)
+	{
+		//cout<<"esq: "<<esq<<" ; dir: "<<dir<<endl;
+		//usleep(250000);
+		meio = (esq + dir) / 2;
+		if ( vetor_pose_xy_bins_[meio] == pose_xy_bins_)
+		{
+			return true;
+		}
+		if ( vetor_pose_xy_bins_[meio] < pose_xy_bins_) esq = meio + 1;
+		else dir = meio - 1;
+	}
+
+	return false;
+}
+
+bool Filtro_Particulas_Kld::ordenaVetorPosexyBins()
+{
+	merge_sort( vetor_pose_xy_bins_, 0, (10000 - 1) );
+
+	return true;
+}
+
+void Filtro_Particulas_Kld::merge_sort (int vector[], const int low, const int high)
+{
+	int mid;
+	if(low < high)
+	{
+		mid = (low + high) / 2;
+		merge_sort( vector, low, mid );
+		merge_sort( vector, mid + 1, high );
+		merge( vector, low, mid, high );
+	}
+
+}
+
+void Filtro_Particulas_Kld::merge (int vector[], const int low, const int mid, const int high)
+{
+	double * b = new double [high + 1 - low];
+	int h,i,j,k;
+	h = low;
+	i = 0;
+	j = mid + 1;
+
+	while((h <= mid) && (j <= high))
+	{
+		if(vetor_pose_xy_bins_[h] <= vetor_pose_xy_bins_[j])
+		{
+			b[i] = vetor_pose_xy_bins_[h];
+			h++;
+		}
+		else
+		{
+			b[i] = vetor_pose_xy_bins_[j];
+			j++;
+		}
+		i++;
+	}
+	if(h > mid)
+	{
+		for(k = j ; k <= high ; k++)
+		{
+			b[i] = vetor_pose_xy_bins_[k];
+			i++;
+		}
+	}
+	else
+	{
+		for(k = h ; k <= mid ; k++)
+		{
+			b[i] = vetor_pose_xy_bins_[k];
+			i++;
+		}
+	}
+	//Carrega o vetor com os indices ordenados
+	for(k = 0 ; k <= high-low ; k++)
+	{
+		vetor_pose_xy_bins_[k + low] = b[k];
+		//cout<<"Energy sorted: "<<vector[grid_indice_sorted_[k + low]].energy<<endl;
+	}
+	delete[] b;
+}
+
+
 void Filtro_Particulas_Kld::spin()
 {
 	ros::Rate loopRate(freq_);
@@ -654,6 +850,7 @@ void Filtro_Particulas_Kld::spin()
 		loopRate.sleep();
 		//cout<<free_ok_<<occ_ok_<<odom_ok_<<laser_ok_<<endl;
 		if (free_ok_ == true && occ_ok_ == true){
+			num_part_ = max_part_;
 			createParticles();
 			if(create_particle_ok_ == 0  && odom_ok_ == true && laser_ok_ == true && zerar_deltas_ == false){
 				pose_anterior_.x = pose_x_;
