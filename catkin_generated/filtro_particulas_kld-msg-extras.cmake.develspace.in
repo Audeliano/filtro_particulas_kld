@@ -1,0 +1,2 @@
+set(filtro_particulas_kld_MESSAGE_FILES "/home/au/catkin_ws/src/filtro_particulas_kld/msg/energia.msg;/home/au/catkin_ws/src/filtro_particulas_kld/msg/pose.msg")
+set(filtro_particulas_kld_SERVICE_FILES "")
