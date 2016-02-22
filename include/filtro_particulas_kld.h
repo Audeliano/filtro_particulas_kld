@@ -88,6 +88,7 @@ class Filtro_Particulas_Kld
 
 		ros::Publisher particle_cloud_pub_;
 		ros::Publisher initial_pose_pub_;
+		ros::Publisher particle_curr_pose_pub_;
 
 		geometry_msgs::Pose2D single_pose_;
 		geometry_msgs::Pose2D particle_pose_[10000];

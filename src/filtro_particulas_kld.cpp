@@ -12,6 +12,7 @@ Filtro_Particulas_Kld::Filtro_Particulas_Kld(ros::NodeHandle n)
 
 	initial_pose_pub_ = n.advertise<geometry_msgs::Pose2D>("filterparticlepose", 1, true);
 	particle_cloud_pub_ = n.advertise<geometry_msgs::PoseArray>("particlecloudAU", 2, true);
+	particle_curr_pose_pub_ = n.advertise<geometry_msgs::PoseArray>("particle_curr_pose", 2, true);
 
 //--------------------------------------------------------------------------------//
 	freq_ = 20.0;
@@ -19,20 +20,20 @@ Filtro_Particulas_Kld::Filtro_Particulas_Kld(ros::NodeHandle n)
 	//num_part_ = 350;
 	max_part_ = 5000;
 	min_part_ = 100;
-	qtdd_laser_ = 20;
+	qtdd_laser_ = 30;
 
 	//passo_base = 0.05;//0.025;
-	range_max_fakelaser = 5.6; //[m]
+	range_max_fakelaser = 10; //[m]
 	//laser_noise_ = qtdd_laser_;
 
 	//noise_level = (desvio_padrao / max_range) * 100% || max_range * erro_desejado
-	laser_data_noise_ = 0.14; //(0.28 / 5.6) ~ 5%
-	move_noise_ = 0.01; //(0.016 / 0.2) ~ 8%
-	turn_noise_ = 0.0075; //(0.012 / 0.15) ~ 8%
+	laser_data_noise_ = 0.28; //(0.28 / 5.6) ~ 5%
+	move_noise_ = 0.020; //(0.016 / 0.2) ~ 8%
+	turn_noise_ = 0.015; //(0.012 / 0.15) ~ 8%
 
 	error_particles_ = 0.14; //0.45 ~ dist de 0.3m da particula (na media) ; 0.28 ~ 0.2m; 0.14 ~ 0.1m
 
-	kld_err_ = 0.015;
+	kld_err_ = 0.020;
 	kld_z_ = 3; //upper 1 − δ quantile of the standard normal distribution -> usar tabela de quantil
 
 
@@ -115,6 +116,7 @@ Filtro_Particulas_Kld::~Filtro_Particulas_Kld()
 	map_meta_data_sub_.shutdown();
 	initial_pose_pub_.shutdown();
 	particle_cloud_pub_.shutdown();
+	particle_curr_pose_pub_.shutdown();
 }
 
 void Filtro_Particulas_Kld::mapCallback(const nav_msgs::MapMetaDataConstPtr& msg)
@@ -282,9 +284,14 @@ void Filtro_Particulas_Kld::createParticles()
 
 double Filtro_Particulas_Kld::gaussian(double mu, double sigma, double x)
 {
-	gaussian_ = (exp(- (pow((mu - x), 2) / pow(sigma, 2) / 2.0))) / sqrt(2.0 * M_PI * pow(sigma, 2));
+	double a;
+	double b;
 
-	//cout<<"Gaussian (mu,sigma,x): mu: "<<mu<<" ; laser_Data: "<<x<<" ; gaussian3: "<<gaussian_<<endl;
+	a = (mu - x) * (mu - x);
+	b = sigma * sigma;
+	gaussian_ = (exp(- a / b / 2.0)) / (sqrt(2.0 * M_PI) * sigma);
+
+	//cout<<"Gaussian (mu,sigma,x): mu: "<<mu<<" | sigma: "<<sigma<<" | laser_Data: "<<x<<" | gaussian3: "<<gaussian_<<endl;
 	//usleep(25000);
 	//cout<<mu<<endl;
 
@@ -390,7 +397,7 @@ void Filtro_Particulas_Kld::fakeLaser()
 		//cout<<"weight_part_"<<i<<" | probt: "<<probt<<endl;
 		//usleep(25000);
 
-		//cout<<"probt"<<probt<<" | probtg: "<<probtg<<endl;
+		//cout<<"probt: "<<probt<<" | probtg: "<<probtg<<endl;
 		//usleep(25000);
 
 	}
@@ -430,7 +437,8 @@ double Filtro_Particulas_Kld::measurementProb(int particleMP, int laserMP)
 {
 	probt +=  fabs(weight_part_laser_[particleMP][laserMP] - (laser_data_[laserMP] + gaussian(0,laser_data_noise_)));
 
-	probtg *= gaussian(laser_data_[laserMP], laser_noise_, weight_part_laser_[particleMP][laserMP]);
+	//probtg *= gaussian(laser_data_[laserMP], laser_data_noise_, weight_part_laser_[particleMP][laserMP]);
+
 
 	//usleep(250000);
 	//cout<<"laser_virtual_["<<particleMP<<"]["<<laserMP<<"]: "<<weight_part_laser_[particleMP][laserMP]<<" | "<<laser_noise_<<" | "<<laser_data_[laserMP]<<" | prob: "<<probt<<endl;
@@ -640,6 +648,10 @@ void Filtro_Particulas_Kld::pubInicialPose()
 		//usleep(250000);
 	}
 
+	initial_pose2_.x = xmedia;
+	initial_pose2_.y = ymedia;
+	initial_pose2_.theta = thetamedia;
+
 	if(sum < error_particles_)
 	{
 		//Para publicar o pose médio.
@@ -671,6 +683,16 @@ void Filtro_Particulas_Kld::cloud()
 				tf::Vector3(particle_pose_[i].x + map_position_x_, particle_pose_[i].y + map_position_y_, 0)),cloud_msg.poses[i]);
 	}
 	particle_cloud_pub_.publish(cloud_msg);
+
+	//publicar o pose_atual
+	geometry_msgs::PoseArray pose_curr_msg;
+	pose_curr_msg.header.stamp = ros::Time::now();
+	pose_curr_msg.header.frame_id = "map";
+	pose_curr_msg.poses.resize(1);
+	tf::poseTFToMsg(tf::Pose(tf::createQuaternionFromYaw(initial_pose2_.theta),
+				tf::Vector3(initial_pose2_.x + map_position_x_, initial_pose2_.y + map_position_y_, 0)),pose_curr_msg.poses[0]);
+
+	particle_curr_pose_pub_.publish(pose_curr_msg);
 }
 
 void Filtro_Particulas_Kld::calculoNumKBins()
@@ -753,11 +775,14 @@ void Filtro_Particulas_Kld::calculoSampleSize(int k)
 
 	if(num_part_ > num_part_ant)
 	{
+		int rand_indice;
+		srand(time(NULL));
 		for(int i = num_part_ant ; i < num_part_ ; i++)
 		{
-			particle_pose_[i].x = particle_pose_[0].x + gaussian(0.0, (3*move_noise_));
-			particle_pose_[i].y = particle_pose_[0].y + gaussian(0.0, (3*move_noise_));
-			particle_pose_[i].theta = particle_pose_[0].theta + gaussian(0.0, (3*turn_noise_));
+			rand_indice = rand() % num_part_ant; //random de 0 a num_part_ant
+			particle_pose_[i].x = particle_pose_[rand_indice].x + gaussian(0.0, (3*move_noise_));
+			particle_pose_[i].y = particle_pose_[rand_indice].y + gaussian(0.0, (3*move_noise_));
+			particle_pose_[i].theta = particle_pose_[rand_indice].theta + gaussian(0.0, (3*turn_noise_));
 		}
 	}
 
@@ -870,7 +895,7 @@ void Filtro_Particulas_Kld::spin()
 			}
 			createParticles();
 
-			if(create_particle_ok_ == 0 && zerar_deltas_ == false)
+			if(create_particle_ok_ == 0 && zerar_deltas_ == false && odom_ok_ == true && laser_ok_ == true)
 			{
 				pose_anterior_.x = pose_x_;
 				pose_anterior_.y = pose_y_;
@@ -878,9 +903,9 @@ void Filtro_Particulas_Kld::spin()
 
 				zerar_deltas_ = true;
 
-				moveParticles();
+				//moveParticles();
 				//cout<<"moveParticles()"<<endl;
-			}else if(create_particle_ok_ == 0 && zerar_deltas_ == true)
+			}else if(create_particle_ok_ == 0 && zerar_deltas_ == true && odom_ok_ == true && laser_ok_ == true)
 			{
 				moveParticles();
 			}
