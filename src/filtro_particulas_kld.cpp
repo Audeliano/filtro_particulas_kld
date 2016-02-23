@@ -13,14 +13,15 @@ Filtro_Particulas_Kld::Filtro_Particulas_Kld(ros::NodeHandle n)
 	initial_pose_pub_ = n.advertise<geometry_msgs::Pose2D>("filterparticlepose", 1, true);
 	particle_cloud_pub_ = n.advertise<geometry_msgs::PoseArray>("particlecloudAU", 2, true);
 	particle_curr_pose_pub_ = n.advertise<geometry_msgs::PoseArray>("particle_curr_pose", 2, true);
+	marker_converted_pose_pub_ = n.advertise<visualization_msgs::Marker>("visualization_mcl_pose", 10, true);
 
 //--------------------------------------------------------------------------------//
-	freq_ = 20.0;
+	freq_ = 30.0;
 
 	//num_part_ = 350;
-	max_part_ = 5000;
+	max_part_ = 7000;
 	min_part_ = 100;
-	qtdd_laser_ = 30;
+	qtdd_laser_ = 60;
 
 	//passo_base = 0.05;//0.025;
 	range_max_fakelaser = 10; //[m]
@@ -33,7 +34,7 @@ Filtro_Particulas_Kld::Filtro_Particulas_Kld(ros::NodeHandle n)
 
 	error_particles_ = 0.14; //0.45 ~ dist de 0.3m da particula (na media) ; 0.28 ~ 0.2m; 0.14 ~ 0.1m
 
-	kld_err_ = 0.020;
+	kld_err_ = 0.020; //quanto maior o erro, menor o número de partículas por k_bins
 	kld_z_ = 3; //upper 1 − δ quantile of the standard normal distribution -> usar tabela de quantil
 
 
@@ -104,6 +105,8 @@ Filtro_Particulas_Kld::Filtro_Particulas_Kld(ros::NodeHandle n)
 	free_ok_ = false;
 	zerar_deltas_ = false;
 	create_particle_ok_ = 1;
+	save_initial_time_ = false;
+	time_converged_ok_ = false;
 
 }
 
@@ -117,6 +120,7 @@ Filtro_Particulas_Kld::~Filtro_Particulas_Kld()
 	initial_pose_pub_.shutdown();
 	particle_cloud_pub_.shutdown();
 	particle_curr_pose_pub_.shutdown();
+	marker_converted_pose_pub_.shutdown();
 }
 
 void Filtro_Particulas_Kld::mapCallback(const nav_msgs::MapMetaDataConstPtr& msg)
@@ -222,6 +226,13 @@ void Filtro_Particulas_Kld::odomCallback (const nav_msgs::OdometryConstPtr& msg)
 	pose_theta_ = tf::getYaw(msg->pose.pose.orientation);// + gaussian(0.0, move_noise_); //em radianos
 
 	twist_x_ = msg->twist.twist.linear.x;
+
+	if((msg->twist.twist.linear.x != 0 || msg->twist.twist.angular.z != 0 )&& save_initial_time_ == false)
+	{
+		time_initial_sec_ = ros::Time::now();
+		save_initial_time_ = true;
+		cout<<"time_initial_sec_: "<<time_initial_sec_<<endl;
+	}
 	//cout<<"TWIST: "<<twist_x_<<endl;
 
 //	cout<<"theta: "<<pose_theta_<<" ; quat: "<<quat<<endl;
@@ -435,7 +446,7 @@ double Filtro_Particulas_Kld::findObstacle(double x, double y)
 
 double Filtro_Particulas_Kld::measurementProb(int particleMP, int laserMP)
 {
-	probt +=  fabs(weight_part_laser_[particleMP][laserMP] - (laser_data_[laserMP] + gaussian(0,laser_data_noise_)));
+	probt +=  fabs(weight_part_laser_[particleMP][laserMP] - (laser_data_[laserMP])); //+ gaussian(0,laser_data_noise_)));
 
 	//probtg *= gaussian(laser_data_[laserMP], laser_data_noise_, weight_part_laser_[particleMP][laserMP]);
 
@@ -648,9 +659,9 @@ void Filtro_Particulas_Kld::pubInicialPose()
 		//usleep(250000);
 	}
 
-	initial_pose2_.x = xmedia;
-	initial_pose2_.y = ymedia;
-	initial_pose2_.theta = thetamedia;
+	//initial_pose2_.x = xmedia;
+	//initial_pose2_.y = ymedia;
+	//initial_pose2_.theta = thetamedia;
 
 	if(sum < error_particles_)
 	{
@@ -667,7 +678,19 @@ void Filtro_Particulas_Kld::pubInicialPose()
 		convergiu_++;
 */
 		initial_pose_pub_.publish(initial_pose2_);
+
+		if(time_converged_ok_ == false)
+		{
+			time_converged_ok_ = true;
+			time_converged_sec_ = ros::Time::now();
+			time_to_converge_sec_ = time_converged_sec_ - time_initial_sec_;
+			cout<<"time_converged_sec_: "<<time_converged_sec_<<" | time_initial_sec_: "<<time_initial_sec_<<" | Delta Time: "<<time_to_converge_sec_<<endl;
+		}
+
+
 		//cout<<"x: "<<xmedia<<" | y: "<<ymedia<<" | theta: "<<thetamedia<<endl;
+
+		visualizationMarker();
 	}
 }
 
@@ -693,6 +716,49 @@ void Filtro_Particulas_Kld::cloud()
 				tf::Vector3(initial_pose2_.x + map_position_x_, initial_pose2_.y + map_position_y_, 0)),pose_curr_msg.poses[0]);
 
 	particle_curr_pose_pub_.publish(pose_curr_msg);
+}
+
+void Filtro_Particulas_Kld::visualizationMarker()
+{
+	points_.header.frame_id = line_strip_.header.frame_id = line_list_.header.frame_id = "map";
+	points_.header.stamp = line_strip_.header.stamp = line_list_.header.stamp = ros::Time::now();
+	points_.ns = line_strip_.ns = line_list_.ns = "points_and_lines";
+	points_.action = line_strip_.action = line_list_.action = visualization_msgs::Marker::ADD;
+
+	points_.id = 0;
+	line_strip_.id = 1;
+	line_list_.id = 2;
+
+	points_.type = visualization_msgs::Marker::POINTS;
+	line_strip_.type = visualization_msgs::Marker::LINE_STRIP;
+	line_list_.type = visualization_msgs::Marker::LINE_LIST;
+
+	// POINTS markers use x and y scale for width/height respectively
+	points_.scale.x = points_.scale.y = 0.03;
+	// LINE_STRIP/LINE_LIST markers use only the x component of scale, for the line width
+	line_strip_.scale.x = 0.1;
+	line_list_.scale.x = 0.1;
+
+	// Points are green
+	points_.color.b = 1.0;
+	points_.color.a = 1.0;
+
+	// Line strip is blue
+	line_strip_.color.b = 1.0;
+	line_strip_.color.a = 1.0;
+
+	// Line list is red
+	line_list_.color.r = 1.0;
+	line_list_.color.a = 1.0;
+
+	geometry_msgs::Point p;
+	p.x = initial_pose2_.x + map_position_x_;
+	p.y = initial_pose2_.y + map_position_y_;
+
+	points_.points.push_back(p);
+
+	marker_converted_pose_pub_.publish(points_);
+
 }
 
 void Filtro_Particulas_Kld::calculoNumKBins()
